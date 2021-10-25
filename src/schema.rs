@@ -1,6 +1,4 @@
 use sqlx::{
-    Sqlite,
-    Database,
     SqlitePool,
     query,
 };
@@ -28,22 +26,21 @@ use argon2::{
     },
     Argon2,
 };
-use async_trait::async_trait;
 use std::collections::HashMap;
 
 
-pub struct Context {
+pub struct Context<'a> {
     pool: SqlitePool,
-    argon2: Argon2<'static>,
-    users: HashMap<String, (User<'static>, String)>,
+    argon2: Argon2<'a>,
+    users: HashMap<String, (User<'a>, String)>,
     roles: HashMap<String, Role>,
-    published_posts: HashMap<i32, Post<'static>>,
-    archived_posts: HashMap<i32, Post<'static>>,
+    published_posts: HashMap<i32, Post<'a>>,
+    archived_posts: HashMap<i32, Post<'a>>,
 }
 
-impl Context {
+impl Context<'_> {
     pub async fn new() -> Result<Self, String> {
-        let mut context = Self {
+        let mut context = Context::<'static> {
             pool: SqlitePool::connect(std::env::var("DATABASE_URL").or(Err(String::from("DATABASE_URL doesn't exist")))?.as_str())
                 .await
                 .or(Err(String::from("Couldn't connect to sqlite server at DATABASE_URL")))?,
@@ -53,27 +50,21 @@ impl Context {
             published_posts: HashMap::new(),
             archived_posts: HashMap::new(),
         };
-        context.from_db();
+        User::from_db(&mut context).await?;
+        Role::from_db(&mut context).await?;
+        Post::from_db(&mut context).await?;
         Ok(context)
-    }
-
-    pub async fn from_db(&mut self) -> Result<(), String> {
-        User::from_db(self).await?;
-        Role::from_db(self).await?;
-        Post::from_db(self).await?;
-        Ok(())
     }
 }
 
-impl juniper::Context for Context {}
+impl juniper::Context for Context<'_> {}
 
-#[async_trait]
+/*#[async_trait]
 trait FromDB {
-    type DB: Database;
     type Context;
 
     async fn from_db(context: &mut Self::Context) -> Result<(), String>;
-}
+}*/
 
 #[derive(GraphQLObject)]
 struct User<'a> {
@@ -104,12 +95,8 @@ impl<'a> User<'a> {
     }
 }
 
-#[async_trait]
-impl<'a> FromDB for User<'a> {
-    type DB = Sqlite;
-    type Context = Context;
-
-    async fn from_db(context: &mut Context) -> Result<(), String> {
+impl<'a> User<'a> {
+    async fn from_db(context: &mut Context<'a>) -> Result<(), String> {
         let users = query!("SELECT * FROM users")
             .fetch_all(&context.pool)
             .await
@@ -152,19 +139,15 @@ impl Role {
     }
 }
 
-#[async_trait]
-impl FromDB for Role {
-    type DB = Sqlite;
-    type Context = Context;
-
-    async fn from_db(context: &mut Context) -> Result<(), String> {
+impl Role {
+    async fn from_db<'a>(context: &mut Context<'a>) -> Result<(), String> {
         let roles = query!("SELECT * FROM roles")
             .fetch_all(&context.pool)
             .await
             .or(Err(String::from("Couldn't fetch roles from database")))?;
         for role in roles {
             context.roles.insert(
-                role.name,
+                role.name.to_string(),
                 Self::new(
                     role.post,
                     role.correct,
@@ -205,20 +188,16 @@ impl<'a> Post<'a> {
     }
 }
 
-#[async_trait]
-impl FromDB for Post<'_> {
-    type DB = Sqlite;
-    type Context = Context;
-
-    async fn from_db(context: &mut Context) -> Result<(), String> {
+impl<'a> Post<'a> {
+    async fn from_db(context: &'static mut Context<'a>) -> Result<(), String> {
         let posts = query!("SELECT * FROM posts")
             .fetch_all(&context.pool)
             .await
             .or(Err(String::from("Couldn't fetch posts from database")))?;
         for post in posts {
             match post.archived {
-                false => context.published_posts,
-                true => context.archived_posts,
+                false => &mut context.published_posts,
+                true => &mut context.archived_posts,
             }.insert(post.id as i32, Self::new(
                 FixedOffset::east(0).datetime_from_str(&post.published, "%+")
                     .or(Err(format!("Couldn't get 'published' for post '{}'", post.title)))?,
