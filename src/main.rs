@@ -16,7 +16,7 @@ use std::io;
 
 mod schema;
 
-use crate::schema::{ Context, create_schema, Schema };
+use crate::schema::{ Context, ContextWrapper, create_schema, Schema };
 
 async fn graphiql() -> HttpResponse {
     let html = graphiql_source("http://127.0.0.1:8080/graphql", None);
@@ -26,7 +26,7 @@ async fn graphiql() -> HttpResponse {
 }
 
 async fn graphql(schema: web::Data<Arc<Schema>>, data: web::Json<GraphQLRequest>) -> Result<HttpResponse, Error> {
-    let context = Context::new().await.unwrap();
+    let context = ContextWrapper::new(Context::new().await.unwrap());
     let user = web::block(move || {
         serde_json::to_string(&data.execute_sync(&schema, &context))
     }).await?;
